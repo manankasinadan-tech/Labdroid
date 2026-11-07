@@ -1,139 +1,91 @@
-# LABDROID (UI/UX v2 - M3) Kitchen Implementation Plan
+# Plan de Correction et d'Intégration des Binaires Natifs FORGE
 
-LABDROID is a professional Android system kitchen application built 100% with Material Design 3 and Jetpack Compose. It provides automated image partition unpacking/repacking (FORGE engine), an internal kitchen workspace project manager, a custom unified popup file explorer, and a modular `.labd` extension framework with complete GitHub Actions CI/CD.
+Résolution du problème d'extraction sur images réelles GSI (3.2 Go), intégration de la suite complète de binaires arm64 dans `/data/data/com.labdroid.kitchen/bin/`, et mise en place d'un pipeline d'extraction/reconstruction réel avec support root loop mount et outils de décompression.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following architectural decisions have been aligned based on user clarification:
-> - **FORGE Execution & Permissions**: Strict root privilege requirement for full partition unpack and repack operations, with clear root detection/warning indicators and execution logging.
-> - **Pre-installed Extension**: Bundling the minimal `.labd` skeleton extension template with manifest, metadata, and execution scripts for instant testing and reference.
-> - **CI/CD Pipeline**: GitHub Actions workflow delivering both Debug and signed Release APK artifacts, ready for GitHub push.
-
-- **Confirmed Decision 1**: Root privilege enforcement for FORGE unpack/repack operations with su bridge command execution.
-- **Confirmed Decision 2**: Zero system intent dependency—LABDROID uses its own native M3 Popup File Selector for all browsing (`/data/data/com.labdroid.kitchen/` and storage).
-- **Confirmed Decision 3**: Unified visual hierarchy where native modules and installed `.labd` extensions share the exact same card layout on the Home screen.
+> Les décisions critiques suivantes ont été confirmées pour corriger l'extraction réelle :
+> - **Mécanisme d'extraction prioritaire** : Intégration complète de la suite d'outils et binaires arm64 autonomes (`simg2img`, `e2fsdroid`, `fsck.erofs`, `make_ext4fs`, `magiskboot`) couplée au montage loop root direct (`mount -o loop,ro`).
+> - **Pack d'outils complet** : Déploiement de tous les binaires indispensables dans `/data/data/com.labdroid.kitchen/bin/` dès le démarrage.
+> - **Gestion rigoureuse des erreurs** : Interdiction absolue de marquer « Succès » sur une analyse inconnue ou une image non extraite. Interruption propre avec rapport d'erreur technique détaillé.
 
 ---
 
-## 1. Overview & Core Concept
+## 1. Diagnostic de l'Incident Signalé
 
-- **What It Does**: LABDROID provides ROM developers and Android power users with a unified mobile kitchen environment. It handles partition manipulation (`system.img`, `vendor.img`, `boot.img` in ext4/EROFS), project rootfs inspection and file operations, `.labd` extension lifecycle management, and a real-time console log viewer.
-- **Target Audience**: Android custom ROM maintainers, security researchers, and developers who need an autonomous partition kitchen on-device.
-- **Key Value**: Replaces cumbersome command-line PC tools with an autonomous, elegant, portable Android application that respects filesystem metadata (SELinux contexts, capabilities, file modes) and never relies on external system intents.
-
----
-
-## 2. User Experience & Visual Design
-
-### Key User Flows
-1. **System Status & Feature Launch (Accueil)**:
-   - User checks device telemetry (Root status, Device model, Android OS version, CPU architecture: arm64-v8a).
-   - User taps any module in the unified vertical card list (FORGE, Kitchen Explorer, Native Tools, or any installed `.labd` extension) to navigate directly into its interface.
-   - Quick action `+` button in top bar triggers the custom M3 Popup File Explorer to search and install `.labd` packages.
-   - Power button toggles the background daemon engine; info button (`i`) displays technical documentation and credits.
-
-2. **FORGE Partition Processing (UNPACK / REPACK)**:
-   - **UNPACK**: User selects partition image (`.img`) via the custom popup file picker, clicks UNPACK. System parses image header, creates a dedicated project folder under `/data/data/com.labdroid.kitchen/home/PROJET/<name>/`, extracts rootfs, saves database metadata, and streams colorized logs in the integrated console.
-   - **REPACK**: User selects an existing project from dropdown, reviews partition stats, clicks REPACK. FORGE recreates image to `/sdcard/LABDROID/REPACKED/` without depending on the original source file.
-
-3. **Project Management (PROJET Tab)**:
-   - Dedicated kitchen workspace explorer for `/data/data/com.labdroid.kitchen/home/PROJET/`.
-   - Displays project list, size, rootfs tree, and metadata.
-   - Full file management actions: delete, copy, cut, paste, rename, and inspect.
-
-4. **Settings & Themes (Paramètres Tab)**:
-   - Theme toggle (Light, Dark, System default).
-   - Security toggles (Root permissions check, storage permissions status).
-   - About section with version information and `.labd` developer guide links.
-
-### Visual Identity & Theme
-- **Theme**: Minimalist Material 3. Clean white/surface cards on subtle light gray/slate background (`#F8F9FA` light / `#121214` dark).
-- **Cards**: Minimalist horizontal cards displaying only the feature icon, bold title, and trailing chevron (`>`), without visual clutter or descriptions.
-- **Typography**: Clean sans-serif with monospace accents for paths, hashes, and console output.
-- **Color Tokens**:
-  - Primary: Deep slate/indigo (`#2563EB` / `#3B82F6`)
-  - Status Indicators: Green (`#16A34A`) for Root/Success, Amber (`#D97706`) for Warning, Rose (`#DC2626`) for Error
-  - Console: Monospace terminal surface (`#0F172A`) with high-contrast colored stream tags
+1. **Erreur d'accès bas niveau sur /sdcard/** : Sur Android 11+ / 14+, les fichiers de plus de 2 Go situés sur le stockage externe (`/sdcard/`) peuvent échouer lors d'une lecture directe par `RandomAccessFile` à cause des restrictions Scoped Storage ou des permissions SELinux de l'espace sandbox. Le test renvoyait silencieusement `Corrupted/Unreadable` et `UNKNOWN`.
+2. **Comportement de substitution (Mock fallback)** : Le moteur enchaînait sur une structure par défaut de 4 fichiers au lieu de lever une exception bloquante, créant une illusion de succès sans le vrai contenu du système GSI.
+3. **Absence des exécutables arm64 dans /bin/** : Les utilitaires système de manipulation d'images (`simg2img`, `e2fsdroid`, `toybox`, `erofs-utils`) n'étaient pas encore déployés physiquement dans `/data/data/com.labdroid.kitchen/bin/`.
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
-
-- **Decision 1: Native Custom File Picker Popup vs. Storage Access Framework (SAF)**
-  - *Chosen Approach*: Fully custom Jetpack Compose dialog modal that navigates the local Linux filesystem directly (`/sdcard`, `/storage/emulated/0`, `/data/data/com.labdroid.kitchen/`).
-  - *Why*: Eliminates system Intent picker restrictions, provides uniform M3 styling, supports instant file filtering (`.img`, `.labd`), and works natively in root/internal app storage.
-  - *Alternatives Considered*: Standard `ActivityResultContracts.OpenDocument` (rejected per user's strict prohibition).
-
-- **Decision 2: Autonomous FORGE Metadata Database**
-  - *Chosen Approach*: During UNPACK, capture file metadata, SELinux contexts, capabilities, and filesystem parameters into `database/project_meta.json` and `database/fs_config`. REPACK strictly relies on this database and `rootfs/`.
-  - *Why*: Guarantees zero retention or dependency on the original `.img`, enabling reproducible standalone builds.
-
-- **Decision 3: Unified Extension Engine (`.labd`)**
-  - *Chosen Approach*: Standard ZIP archive containing `manifest.json`, executable scripts/binaries for `arm64-v8a`, and UI metadata. Deployed directly to internal kitchen bin and registered into the Home screen card list seamlessly.
-  - *Why*: Provides first-class citizenship for community and custom extensions.
-
----
-
-## 4. Technical Architecture & Data Strategy
-
-### Architecture & Component Diagram
+## 2. Architecture Technique & Pipeline d'Extraction Réel
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        LABDROID Main Activity                          │
-├────────────────────────────────────────────────────────────────────────┤
-│                       Material 3 Scaffold & Insets                     │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ TopAppBar (Title + Version | [+] Install Labd | Daemon | Info)   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    Current Screen (Bottom Nav)                   │  │
-│  │  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────┐  │  │
-│  │  │  Accueil (Home)  │  │   PROJET (Mgr)   │  │   Paramètres   │  │  │
-│  │  │ - Telemetry Card │  │ - Project List   │  │ - Theme Switch │  │  │
-│  │  │ - Unified Cards  │  │ - File Tree      │  │ - Root Status  │  │  │
-│  │  │   (Forge + Labd) │  │ - Cut/Copy/Paste │  │ - Doc & About  │  │  │
-│  │  └──────────────────┘  └──────────────────┘  └────────────────┘  │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Popup File Selector Modal (Custom M3, internal + sdcard paths)    │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ NavigationBar (Accueil | PROJET | Paramètres)                    │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
+│                   PIPELINE RÉEL DE DÉPAQUETAGE FORGE                   │
 └────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Core Business & Engines                         │
-│  ┌─────────────────────────┐  ┌─────────────────────────────────────┐  │
-│  │      Forge Engine       │  │        Labd Extension Engine        │  │
-│  │ - Unpack & FS Analyzer  │  │ - Archive Validator (.labd zip)     │  │
-│  │ - Metadata DB Builder   │  │ - Manifest Parser (manifest.json)   │  │
-│  │ - Rootfs Rebuilder      │  │ - Bin Deployer (arm64-v8a)          │  │
-│  │ - Repack to /sdcard/    │  │ - Extension Registry                │  │
-│  └─────────────────────────┘  └─────────────────────────────────────┘  │
-│  ┌─────────────────────────┐  ┌─────────────────────────────────────┐  │
-│  │  Project Filesystem Mgr │  │       Real-Time Log Streamer        │  │
-│  │ - /data/data/.../PROJET │  │ - Monospace M3 Console              │  │
-│  │ - Safe copy/move/delete │  │ - INFO, SUCCESS, WARNING, ERROR     │  │
-│  └─────────────────────────┘  └─────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
+       1. Analyse physique robuste (Root dd / stat / readmagic)
+          ├─ Sparse Android (0xED26FF3A)
+          ├─ Linux ext4 (0xEF53)
+          ├─ EROFS (0xE0F5E1E2)
+          └─ Android Boot Image (ANDROID!)
+                                    │
+                                    ▼
+       2. Conversion Android Sparse -> RAW
+          └─ simg2img <source.img> temp/unsparse.raw
+                                    │
+                                    ▼
+       3. Extraction réelle du filesystem dans rootfs/
+          ├─ Méthode A (Root) : mount -o loop,ro unsparse.raw /mnt_tmp
+          │                     toybox cp -a -H -d -p /mnt_tmp/. rootfs/
+          │                     umount /mnt_tmp
+          └─ Méthode B (Binaire) : fsck.erofs --extract=rootfs/ unsparse.raw
+                                    ou e2fsdroid / 7z extract
+                                    │
+                                    ▼
+       4. Extraction des vrais contextes SELinux & Permissions
+          ├─ Génération du vrai fs_config (UID, GID, modes réels)
+          └─ Génération du vrai file_contexts.bin (u:object_r:...)
+                                    │
+                                    ▼
+       5. Validation stricte d'autonomie -> database/project_meta.json
 ```
 
-### Filesystem Layout Contract
-- Kitchen Root: `/data/data/com.labdroid.kitchen/home/`
-- Projects Root: `/data/data/com.labdroid.kitchen/home/PROJET/`
-- Project Specifics:
-  - Rootfs: `/data/data/com.labdroid.kitchen/home/PROJET/<project_name>/rootfs/`
-  - Metadata: `/data/data/com.labdroid.kitchen/home/PROJET/<project_name>/database/`
-  - Temp: `/data/data/com.labdroid.kitchen/home/PROJET/<project_name>/temp/`
-- Output Export: `/sdcard/LABDROID/REPACKED/`
-- Extensions Registry: `/data/data/com.labdroid.kitchen/extensions/`
-- Central Binaries: `/data/data/com.labdroid.kitchen/bin/`
+---
 
-### CI/CD and Extension Documentation Deliverables
-- `.github/workflows/android-build.yml`: Automated GitHub Actions workflow compiling debug and release APKs on push.
-- `docs/LABD_SPECIFICATION.md`: The official bible and skeleton specification for `.labd` module creation.
-- Sample bundled `.labd` skeleton package for immediate on-device testing.
+## 3. Plan d'Implémentation Étape par Étape
+
+### Étape 1 : Déploiement Automatisé des Binaires arm64
+- Déploiement et extraction automatique des exécutables et wrappers vers `/data/data/com.labdroid.kitchen/bin/` :
+  - `simg2img` & `img2simg` (Gestion des images Android Sparse).
+  - `make_ext4fs` & `e2fsdroid` (Fabrication et injection de contextes ext4).
+  - `erofs-utils` (`mkfs.erofs`, `fsck.erofs` pour extraction et repack EROFS).
+  - `magiskboot` (Dépaquetage / repaquetage de `boot.img`, `init_boot.img`).
+  - `toybox` (Utilitaires POSIX avec gestion des attributs étendus et liens symboliques).
+- Attribution automatique des droits d'exécution `chmod 755` sur tous les fichiers de `/data/data/com.labdroid.kitchen/bin/`.
+
+### Étape 2 : Réécriture de l'Analyseur d'Image (`analyzeImageHeader`)
+- Remplacement du simple `RandomAccessFile` par une lecture bas-niveau résiliente :
+  - Si le fichier est inaccessible via Java, appel direct via shell/root (`dd if="..." bs=4096 count=1`).
+  - Détection exacte des signatures Sparse, ext4, EROFS, F2FS et Boot.
+  - **Arrêt immédiat en cas d'échec** : journalisation en `[ERROR]`, affichage clair de l'erreur dans la console, et rejet de l'opération (plus de faux succès).
+
+### Étape 3 : Pipeline d'Extraction Réel (UNPACK)
+- Exécution de la conversion Sparse si nécessaire (`simg2img`).
+- Montage loopback root avec point de montage isolé temporaire (`/data/data/com.labdroid.kitchen/mnt_temp`).
+- Copie intégrale de l'arborescence réelle avec préservation des liens symboliques, permissions et contextes.
+- Collecte des contextes SELinux réels et génération des bases dans `database/`.
+- Nettoyage rigoureux des fichiers temporaires après extraction.
+
+### Étape 4 : Pipeline de Reconstruction Réel (REPACK)
+- Validation des métadonnées `database/project_meta.json`.
+- Calcul de la taille de bloc et d'inodes requise pour `rootfs/`.
+- Recompilation de l'image partition conforme (RAW ou Sparse) dans `/sdcard/LABDROID/REPACKED/`.
+- Vérification de l'intégrité de l'image finale par somme de contrôle SHA-256.
+
+### Étape 5 : Interface & Moniteur de Binaires
+- Ajout d'une section « Diagnostic des Binaires » dans l'onglet Outils/Paramètres listant l'état (`Installé / Prêt`) de chaque utilitaire binaire dans `/data/data/com.labdroid.kitchen/bin/`.

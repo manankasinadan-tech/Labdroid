@@ -95,6 +95,7 @@ fun HomeScreen(
     LaunchedEffect(Unit) {
         systemStatus = RootService.getSystemStatus(context)
         LabdManager.refreshExtensions(context)
+        com.example.data.service.BinaryManager.ensureBinariesDeployed(context)
     }
 
     // Build the unified features list: Natives followed by installed extensions

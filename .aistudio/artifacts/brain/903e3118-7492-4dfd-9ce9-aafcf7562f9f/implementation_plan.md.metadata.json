@@ -1,6 +1,6 @@
 {
-  "summary":  "Architectural blueprint and implementation plan for LABDROID (UI/UX v2 - M3) Android kitchen application, featuring Forge partition engine, custom popup file picker, project manager, .labd modular extension system, and GitHub Actions CI/CD setup.",
-  "updatedAt":  "2026-11-07T19:05:03.492701496Z",
+  "summary":  "Plan d'action correctif et d'intégration des vrais binaires et du moteur d'extraction natif (simg2img, e2fsdroid, make_ext4fs, erofs-utils, magiskboot, loop-mount root) pour FORGE dans LABDROID.",
+  "updatedAt":  "2026-11-07T20:12:58.848385595Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
