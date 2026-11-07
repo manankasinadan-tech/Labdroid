@@ -1,0 +1,34 @@
+{
+  "id": "skeleton_extension",
+  "name": "Module Squelette .labd",
+  "version": "1.0.0",
+  "author": "LABDROID Team",
+  "description": "Template et squelette officiel pour créer des modules d'extension .labd haute performance.",
+  "minApi": 24,
+  "targetArch": "arm64-v8a",
+  "entrypoint": "main.sh",
+  "icon": "extension",
+  "permissions": [
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE"
+  ],
+  "binaries": [
+    "labd_skeleton_tool"
+  ],
+  "actions": [
+    {
+      "id": "run_test",
+      "label": "Tester le binaire arm64",
+      "command": "labd_skeleton_tool --version; uname -a",
+      "requiresRoot": false,
+      "outputToConsole": true
+    },
+    {
+      "id": "verify_storage",
+      "label": "Vérifier l'espace Kitchen",
+      "command": "df -h /data/data/com.labdroid.kitchen/",
+      "requiresRoot": false,
+      "outputToConsole": true
+    }
+  ]
+}

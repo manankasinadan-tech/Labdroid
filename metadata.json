@@ -1,0 +1,6 @@
+{
+  "name": "LABDROID",
+  "description": "Android system kitchen with FORGE partition engine, project workspace manager, custom popup file selector, and .labd extension system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

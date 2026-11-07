@@ -1,0 +1,3 @@
+#!/system/bin/sh
+echo "LABDROID Skeleton Binary Tool v1.0.0 (arm64-v8a target)"
+echo "Binaire centralisé dans /data/data/com.labdroid.kitchen/bin/"
