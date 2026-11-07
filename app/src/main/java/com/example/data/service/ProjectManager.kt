@@ -148,25 +148,67 @@ object ProjectManager {
     }
 
     suspend fun listDirectoryContents(dir: File): List<FileSystemItem> = withContext(Dispatchers.IO) {
-        if (!dir.exists() || !dir.isDirectory) return@withContext emptyList()
+        if (!dir.exists()) return@withContext emptyList()
 
-        val files = dir.listFiles() ?: return@withContext emptyList()
-        files.map { file ->
-            val ext = if (file.isFile) file.extension.lowercase(Locale.ROOT) else ""
-            val childCount = if (file.isDirectory) (file.listFiles()?.size ?: 0) else 0
-            FileSystemItem(
-                name = file.name,
-                path = file.absolutePath,
-                isDirectory = file.isDirectory,
-                sizeBytes = if (file.isFile) file.length() else 0L,
-                lastModified = file.lastModified(),
-                isReadable = file.canRead(),
-                isWritable = file.canWrite(),
-                isExecutable = file.canExecute(),
-                extension = ext,
-                childCount = childCount
-            )
-        }.sortedWith(
+        val fileList = mutableListOf<FileSystemItem>()
+        val javaFiles = dir.listFiles()
+
+        if (javaFiles != null && javaFiles.isNotEmpty()) {
+            javaFiles.forEach { file ->
+                val ext = if (file.isFile) file.extension.lowercase(Locale.ROOT) else ""
+                val childCount = if (file.isDirectory) (file.listFiles()?.size ?: 0) else 0
+                fileList.add(
+                    FileSystemItem(
+                        name = file.name,
+                        path = file.absolutePath,
+                        isDirectory = file.isDirectory,
+                        sizeBytes = if (file.isFile) file.length() else 0L,
+                        lastModified = file.lastModified(),
+                        isReadable = file.canRead(),
+                        isWritable = file.canWrite(),
+                        isExecutable = file.canExecute(),
+                        extension = ext,
+                        childCount = childCount
+                    )
+                )
+            }
+        }
+
+        // If Java returned only directories or empty due to Scoped Storage on /storage/emulated/0, query root
+        val hasRegularFiles = fileList.any { !it.isDirectory }
+        if (!hasRegularFiles) {
+            val rootLines = mutableListOf<String>()
+            RootService.executeCommand("ls -1Ap '${dir.absolutePath}' 2>/dev/null", useRoot = true) { line ->
+                if (line.isNotBlank()) rootLines.add(line.trim())
+            }
+
+            if (rootLines.isNotEmpty()) {
+                rootLines.forEach { entryName ->
+                    val isDir = entryName.endsWith("/")
+                    val cleanName = entryName.removeSuffix("/")
+                    if (fileList.none { it.name == cleanName }) {
+                        val childFile = File(dir, cleanName)
+                        val ext = if (!isDir && cleanName.contains(".")) cleanName.substringAfterLast(".").lowercase(Locale.ROOT) else ""
+                        fileList.add(
+                            FileSystemItem(
+                                name = cleanName,
+                                path = childFile.absolutePath,
+                                isDirectory = isDir,
+                                sizeBytes = if (!isDir) childFile.length() else 0L,
+                                lastModified = childFile.lastModified(),
+                                isReadable = true,
+                                isWritable = true,
+                                isExecutable = false,
+                                extension = ext,
+                                childCount = 0
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        fileList.sortedWith(
             compareByDescending<FileSystemItem> { it.isDirectory }
                 .thenBy { it.name.lowercase(Locale.ROOT) }
         )

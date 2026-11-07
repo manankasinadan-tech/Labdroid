@@ -63,8 +63,11 @@ object BinaryManager {
                 file.setReadable(true, false)
             }
 
-            // Also execute chmod 755 via root if available to guarantee executable rights
-            RootService.executeCommand("chmod -R 755 ${binDir.absolutePath}", useRoot = true)
+            // Also execute chmod 755 and chcon system_file via root to bypass SELinux restrictions
+            RootService.executeCommand(
+                "chmod -R 755 '${binDir.absolutePath}' && chcon -R u:object_r:system_file:s0 '${binDir.absolutePath}' 2>/dev/null",
+                useRoot = true
+            )
 
             refreshBinariesList(context)
             Result.success(Unit)
@@ -248,9 +251,11 @@ object BinaryManager {
         }
 
         val output = StringBuilder()
+        // Execute through /system/bin/sh with superuser permissions to bypass W^X and SELinux on /data/data/
+        val cmd = "/system/bin/sh '${binFile.absolutePath}' --version || /system/bin/sh '${binFile.absolutePath}'"
         val code = RootService.executeCommand(
-            command = "${binFile.absolutePath} --version || ${binFile.absolutePath}",
-            useRoot = false,
+            command = cmd,
+            useRoot = true,
             workingDir = binDir,
             onOutputLine = { line -> output.append(line).append("\n") }
         )

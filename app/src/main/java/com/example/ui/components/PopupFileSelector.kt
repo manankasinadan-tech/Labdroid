@@ -115,28 +115,34 @@ fun PopupFileSelector(
     var selectedItem by remember { mutableStateOf<FileSystemItem?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
+    var showAllFiles by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentDir) {
         items = ProjectManager.listDirectoryContents(currentDir)
         selectedItem = null
     }
 
-    val filteredItems = remember(items, searchQuery, mode) {
+    val filteredItems = remember(items, searchQuery, mode, showAllFiles) {
         items.filter { item ->
-            // Search filter
             val matchesSearch = searchQuery.isBlank() || item.name.contains(searchQuery, ignoreCase = true)
             if (!matchesSearch) return@filter false
 
-            // Mode filter
             if (item.isDirectory) {
                 true
+            } else if (showAllFiles) {
+                true // Show all files without filter
             } else {
+                val nameLower = item.name.lowercase(Locale.ROOT)
                 when (mode) {
                     FileSelectorMode.IMAGES -> {
-                        item.extension in listOf("img", "bin", "raw", "sparse", "iso")
+                        nameLower.endsWith(".img") || nameLower.endsWith(".bin") ||
+                                nameLower.endsWith(".raw") || nameLower.endsWith(".sparse") ||
+                                nameLower.endsWith(".iso") || nameLower.contains(".img.") ||
+                                item.extension in listOf("img", "bin", "raw", "sparse", "iso", "xz", "gz", "7z", "zip")
                     }
                     FileSelectorMode.LABD_EXTENSIONS -> {
-                        item.extension in listOf("labd", "zip")
+                        nameLower.endsWith(".labd") || nameLower.endsWith(".zip") ||
+                                item.extension in listOf("labd", "zip")
                     }
                     FileSelectorMode.ANY_FILE -> true
                     FileSelectorMode.DIRECTORY_ONLY -> false
@@ -261,10 +267,17 @@ fun PopupFileSelector(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilterChip(
-                        selected = currentDir.absolutePath.startsWith(sdcardRoot),
+                        selected = currentDir.absolutePath == sdcardRoot,
                         onClick = { currentDir = File(sdcardRoot) },
                         label = { Text("Sdcard", fontSize = 12.sp) },
                         leadingIcon = { Icon(Icons.Default.SdCard, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    )
+                    val downloadDir = remember { File(sdcardRoot, "Download") }
+                    FilterChip(
+                        selected = currentDir.absolutePath == downloadDir.absolutePath,
+                        onClick = { if (downloadDir.exists()) currentDir = downloadDir else currentDir = File(sdcardRoot) },
+                        label = { Text("Download", fontSize = 12.sp) },
+                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp)) }
                     )
                     FilterChip(
                         selected = currentDir.absolutePath == projectsRoot,
@@ -279,10 +292,13 @@ fun PopupFileSelector(
                         leadingIcon = { Icon(Icons.Default.Home, contentDescription = null, modifier = Modifier.size(16.dp)) }
                     )
                     FilterChip(
-                        selected = currentDir.absolutePath == extRoot,
-                        onClick = { currentDir = File(extRoot) },
-                        label = { Text("Extensions", fontSize = 12.sp) },
-                        leadingIcon = { Icon(Icons.Default.Extension, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        selected = showAllFiles,
+                        onClick = { showAllFiles = !showAllFiles },
+                        label = { Text(if (showAllFiles) "Tous les fichiers (*)" else "Filtre actif", fontSize = 12.sp, fontWeight = if (showAllFiles) FontWeight.Bold else FontWeight.Normal) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
                     )
                 }
 

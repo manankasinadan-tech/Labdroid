@@ -403,56 +403,80 @@ object ForgeEngine {
         fsType: String,
         partitionName: String
     ): Boolean = withContext(Dispatchers.IO) {
-        val mntDir = File("/data/data/com.labdroid.kitchen/mnt_temp").apply { mkdirs() }
+        log("Lancement du montage boucle root et extraction en session unique...", LogLevel.INFO)
 
-        // Method A: Direct Root Loop Mount (Primary mechanism for ext4 and EROFS)
-        log("Tentative de montage boucle root (mount -o loop,ro)...", LogLevel.INFO)
-        val mountCmd = if (fsType.equals("erofs", ignoreCase = true)) {
-            "mount -t erofs -o loop,ro '${rawImage.absolutePath}' '${mntDir.absolutePath}'"
+        val atomicExtractScript = """
+            RAW="${rawImage.absolutePath}"
+            DST="${rootfsDir.absolutePath}"
+            MNT="/data/local/tmp/labdroid_mnt_extract"
+            
+            rm -rf "${'$'}MNT"
+            mkdir -p "${'$'}MNT"
+            mkdir -p "${'$'}DST"
+            
+            echo "[mount] Montage boucle sur ${'$'}MNT..."
+            # Try ext4 / auto mount
+            mount -o loop,ro "${'$'}RAW" "${'$'}MNT" 2>/dev/null
+            RES=${'$'}?
+            
+            if [ ${'$'}RES -ne 0 ] && [ "$fsType" = "erofs" ]; then
+                echo "[mount] Tentative explicite -t erofs..."
+                mount -t erofs -o loop,ro "${'$'}RAW" "${'$'}MNT" 2>/dev/null
+                RES=${'$'}?
+            fi
+            
+            if [ ${'$'}RES -eq 0 ]; then
+                echo "[mount] Montage boucle root réussi."
+                echo "[copy] Extraction intégrale des fichiers vers rootfs/..."
+                cp -a "${'$'}MNT"/. "${'$'}DST"/ 2>/dev/null || cp -r "${'$'}MNT"/* "${'$'}DST"/ 2>/dev/null
+                
+                # Ensure files are readable by LABDROID app
+                chmod -R 755 "${'$'}DST" 2>/dev/null
+                sync
+                
+                COPIED_COUNT=${'$'}(ls -1 "${'$'}DST" 2>/dev/null | wc -l)
+                echo "[copy] Copie terminée (${'$'}COPIED_COUNT entrées de premier niveau extraites)."
+                
+                umount "${'$'}MNT" 2>/dev/null
+                rm -rf "${'$'}MNT" 2>/dev/null
+                exit 0
+            else
+                echo "[mount] Montage boucle direct impossible (code ${'$'}RES)."
+                rm -rf "${'$'}MNT" 2>/dev/null
+                
+                # Fallback: extract via 7z or specialized tool if available
+                if command -v 7z >/dev/null 2>&1; then
+                    echo "[extractor] Tentative d'extraction avec 7z..."
+                    7z x "${'$'}RAW" -o"${'$'}DST" -y >/dev/null 2>&1
+                    chmod -R 755 "${'$'}DST" 2>/dev/null
+                    exit 0
+                fi
+                exit 1
+            fi
+        """.trimIndent()
+
+        val exitCode = RootService.executeCommand(
+            command = atomicExtractScript,
+            useRoot = true
+        ) { line ->
+            log(line, if (line.contains("réussi") || line.contains("terminée")) LogLevel.SUCCESS else LogLevel.INFO)
+        }
+
+        // Give the filesystem a moment to flush buffers
+        val hasExtractedFiles = rootfsDir.listFiles()?.isNotEmpty() == true
+        if (hasExtractedFiles) {
+            log("Contenu de la partition vérifié dans rootfs/.", LogLevel.SUCCESS)
         } else {
-            "mount -o loop,ro '${rawImage.absolutePath}' '${mntDir.absolutePath}'"
-        }
-
-        var mountSuccess = false
-        val mountCode = RootService.executeCommand(mountCmd, useRoot = true) { line ->
-            log("[mount] $line", LogLevel.INFO)
-        }
-
-        if (mountCode == 0 && mntDir.listFiles()?.isNotEmpty() == true) {
-            mountSuccess = true
-            log("Système de fichiers monté avec succès dans ${mntDir.absolutePath}", LogLevel.SUCCESS)
-
-            // Copy all files with preserved attributes (cp -a)
-            log("Copie intégrale des fichiers vers rootfs/ avec attributs préservés...", LogLevel.INFO)
-            val copyCmd = "cp -a '${mntDir.absolutePath}'/. '${rootfsDir.absolutePath}'/"
-            RootService.executeCommand(copyCmd, useRoot = true) { line ->
-                log("[copy] $line", LogLevel.INFO)
+            // Check with root if Java permission was delayed
+            val countStr = StringBuilder()
+            RootService.executeCommand("ls -1 '${rootfsDir.absolutePath}' | wc -l", useRoot = true) {
+                countStr.append(it.trim())
             }
-
-            // Unmount
-            log("Démontage propre du périphérique boucle...", LogLevel.INFO)
-            RootService.executeCommand("umount '${mntDir.absolutePath}'", useRoot = true)
-        } else {
-            log("Montage boucle root indisponible ou non supporté par le noyau (code $mountCode).", LogLevel.WARNING)
-        }
-
-        // Method B: Userspace Binary Extractors fallback
-        if (!mountSuccess || rootfsDir.listFiles().isNullOrEmpty()) {
-            log("Activation de l'extracteur binaire spécialisé pour $fsType...", LogLevel.INFO)
-            val binDir = File("/data/data/com.labdroid.kitchen/bin")
-
-            if (fsType.equals("erofs", ignoreCase = true)) {
-                val fsckCmd = "${binDir.absolutePath}/fsck.erofs --extract='${rootfsDir.absolutePath}' '${rawImage.absolutePath}'"
-                RootService.executeCommand(fsckCmd, useRoot = true) { log(it, LogLevel.INFO) }
-            } else {
-                // For ext4: extract via debugfs or native unpacker
-                val extractCmd = "debugfs -R 'rdump / \"${rootfsDir.absolutePath}\"' '${rawImage.absolutePath}' 2>/dev/null"
-                RootService.executeCommand(extractCmd, useRoot = true) { log(it, LogLevel.INFO) }
+            val count = countStr.toString().toIntOrNull() ?: 0
+            if (count > 0) {
+                RootService.executeCommand("chmod -R 777 '${rootfsDir.absolutePath}'", useRoot = true)
             }
         }
-
-        // Clean up mount directory
-        mntDir.deleteRecursively()
 
         return@withContext rootfsDir.listFiles()?.isNotEmpty() == true
     }
