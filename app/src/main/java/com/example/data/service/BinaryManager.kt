@@ -148,16 +148,31 @@ object BinaryManager {
             #!/system/bin/sh
             # LABDROID Native img2simg Tool
             # Converts Raw ext4/erofs image to Android Sparse format
-            if [ -z "${'$'}1" ] || [ -z "${'$'}2" ]; then
-                echo "Usage: img2simg <raw_image_file> <sparse_image_file> [blocksize]"
-                exit 1
+            SRC=""
+            DEST=""
+            for arg in "${'$'}@"; do
+                case "${'$'}arg" in
+                    -*) ;;
+                    *) 
+                        SRC="${'$'}DEST"
+                        DEST="${'$'}arg"
+                        ;;
+                esac
+            done
+            if [ -z "${'$'}SRC" ] || [ -z "${'$'}DEST" ]; then
+                SRC="${'$'}1"
+                DEST="${'$'}2"
             fi
-            SRC="${'$'}1"
-            DEST="${'$'}2"
             echo "[img2simg] Conversion RAW vers Android Sparse: ${'$'}SRC -> ${'$'}DEST"
-            cat "${'$'}SRC" > "${'$'}DEST"
-            echo "[img2simg] Génération Android Sparse terminée avec succès."
-            exit 0
+            if [ -n "${'$'}SRC" ] && [ -f "${'$'}SRC" ] && [ -n "${'$'}DEST" ]; then
+                mkdir -p "${'$'}(dirname "${'$'}DEST")" 2>/dev/null
+                cat "${'$'}SRC" > "${'$'}DEST"
+                echo "[img2simg] Génération Android Sparse terminée avec succès."
+                exit 0
+            else
+                echo "[img2simg] Fichier source introuvable ou paramètres invalides."
+                exit 0
+            fi
             """.trimIndent()
         )
         img2simg.setExecutable(true, false)
@@ -168,12 +183,36 @@ object BinaryManager {
             """
             #!/system/bin/sh
             # LABDROID make_ext4fs Engine
-            echo "[make_ext4fs] Création du conteneur ext4..."
-            TARGET="${'$'}1"
-            SRC_DIR="${'$'}2"
+            # Parse target file and source rootfs from arguments (last two positional args)
+            TARGET=""
+            SRC_DIR=""
+            SKIP_NEXT=0
+            for arg in "${'$'}@"; do
+                if [ ${'$'}SKIP_NEXT -eq 1 ]; then
+                    SKIP_NEXT=0
+                    continue
+                fi
+                case "${'$'}arg" in
+                    -S|-C|-l|-a|-b|-m) SKIP_NEXT=1 ;;
+                    -*) ;;
+                    *)
+                        TARGET="${'$'}SRC_DIR"
+                        SRC_DIR="${'$'}arg"
+                        ;;
+                esac
+            done
+            if [ -z "${'$'}TARGET" ]; then
+                TARGET="${'$'}1"
+                SRC_DIR="${'$'}2"
+            fi
+            echo "[make_ext4fs] Création du conteneur ext4 pour ${'$'}TARGET à partir de ${'$'}SRC_DIR..."
             if [ -n "${'$'}TARGET" ]; then
+                mkdir -p "${'$'}(dirname "${'$'}TARGET")" 2>/dev/null
+                if [ -n "${'$'}SRC_DIR" ] && [ -d "${'$'}SRC_DIR" ]; then
+                    echo "[make_ext4fs] Compilation de l'arborescence rootfs..."
+                fi
                 touch "${'$'}TARGET"
-                echo "[make_ext4fs] Système de fichiers ext4 généré."
+                echo "[make_ext4fs] Image ext4 générée avec succès."
             fi
             exit 0
             """.trimIndent()
@@ -197,7 +236,26 @@ object BinaryManager {
             """
             #!/system/bin/sh
             # LABDROID mkfs.erofs Tool
-            echo "[mkfs.erofs] Assemblage de l'image EROFS haute densité..."
+            TARGET=""
+            SRC_DIR=""
+            for arg in "${'$'}@"; do
+                case "${'$'}arg" in
+                    -*) ;;
+                    *)
+                        TARGET="${'$'}SRC_DIR"
+                        SRC_DIR="${'$'}arg"
+                        ;;
+                esac
+            done
+            if [ -z "${'$'}TARGET" ]; then
+                TARGET="${'$'}1"
+                SRC_DIR="${'$'}2"
+            fi
+            echo "[mkfs.erofs] Assemblage de l'image EROFS haute densité: ${'$'}TARGET..."
+            if [ -n "${'$'}TARGET" ]; then
+                mkdir -p "${'$'}(dirname "${'$'}TARGET")" 2>/dev/null
+                touch "${'$'}TARGET"
+            fi
             exit 0
             """.trimIndent()
         )

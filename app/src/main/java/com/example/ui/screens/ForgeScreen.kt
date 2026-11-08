@@ -439,12 +439,16 @@ fun ForgeScreen(
                             onClick = {
                                 selectedProject?.let { proj ->
                                     scope.launch {
-                                        val result = ForgeEngine.repackProject(context, proj.name)
-                                        if (result.isSuccess) {
-                                            val outFile = result.getOrThrow()
-                                            Toast.makeText(context, "Image reconstruite: ${outFile.name}", Toast.LENGTH_LONG).show()
-                                        } else {
-                                            Toast.makeText(context, "Échec REPACK: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                        try {
+                                            val result = ForgeEngine.repackProject(context, proj.name)
+                                            if (result.isSuccess) {
+                                                val outFile = result.getOrThrow()
+                                                Toast.makeText(context, "Image reconstruite: ${outFile.name}", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                Toast.makeText(context, "Échec REPACK: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                            }
+                                        } catch (t: Throwable) {
+                                            Toast.makeText(context, "Erreur imprévue: ${t.message}", Toast.LENGTH_LONG).show()
                                         }
                                     }
                                 }

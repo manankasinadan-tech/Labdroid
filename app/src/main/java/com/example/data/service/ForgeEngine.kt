@@ -489,103 +489,117 @@ object ForgeEngine {
         projectName: String
     ): Result<File> = withContext(Dispatchers.IO) {
         _isProcessing.value = true
-        log("=== DÉBUT DE L'OPÉRATION REPACK ===", LogLevel.INFO)
-        log("Chargement du projet: $projectName", LogLevel.INFO)
+        try {
+            log("=== DÉBUT DE L'OPÉRATION REPACK ===", LogLevel.INFO)
+            log("Chargement du projet: $projectName", LogLevel.INFO)
 
-        val projectsDir = getProjectsDir(context)
-        val projectDir = File(projectsDir, projectName)
-        val rootfsDir = File(projectDir, "rootfs")
-        val databaseDir = File(projectDir, "database")
-        val tempDir = File(projectDir, "temp").apply { mkdirs() }
+            val projectsDir = getProjectsDir(context)
+            val projectDir = File(projectsDir, projectName)
+            val rootfsDir = File(projectDir, "rootfs")
+            val databaseDir = File(projectDir, "database")
+            val tempDir = File(projectDir, "temp").apply { mkdirs() }
 
-        if (!projectDir.exists()) {
-            log("ERREUR: Le projet '$projectName' n'existe pas.", LogLevel.ERROR)
-            _isProcessing.value = false
-            return@withContext Result.failure(IllegalArgumentException("Projet introuvable"))
-        }
+            if (!projectDir.exists()) {
+                log("ERREUR: Le projet '$projectName' n'existe pas.", LogLevel.ERROR)
+                _isProcessing.value = false
+                return@withContext Result.failure(IllegalArgumentException("Projet introuvable"))
+            }
 
-        val metaJsonFile = File(databaseDir, "project_meta.json")
-        if (!metaJsonFile.exists()) {
-            log("ERREUR CRITIQUE: 'database/project_meta.json' manquant! Impossible de reconstruire sans métadonnées certifiées.", LogLevel.ERROR)
-            _isProcessing.value = false
-            return@withContext Result.failure(IllegalStateException("Métadonnées introuvables"))
-        }
+            val metaJsonFile = File(databaseDir, "project_meta.json")
+            if (!metaJsonFile.exists()) {
+                log("ERREUR CRITIQUE: 'database/project_meta.json' manquant! Impossible de reconstruire sans métadonnées certifiées.", LogLevel.ERROR)
+                _isProcessing.value = false
+                return@withContext Result.failure(IllegalStateException("Métadonnées introuvables"))
+            }
 
-        val metadata = loadProjectMetadata(metaJsonFile)
-        if (metadata == null) {
-            log("ERREUR: Données de métadonnées corrompues ou incomplètes.", LogLevel.ERROR)
-            _isProcessing.value = false
-            return@withContext Result.failure(IllegalStateException("Métadonnées invalides"))
-        }
+            val metadata = loadProjectMetadata(metaJsonFile)
+            if (metadata == null) {
+                log("ERREUR: Données de métadonnées corrompues ou incomplètes.", LogLevel.ERROR)
+                _isProcessing.value = false
+                return@withContext Result.failure(IllegalStateException("Métadonnées invalides"))
+            }
 
-        log("Métadonnées chargées avec succès:", LogLevel.INFO)
-        log(" - Partition: ${metadata.partitionName}", LogLevel.INFO)
-        log(" - Système de fichiers: ${metadata.filesystemType.uppercase()}", LogLevel.INFO)
-        log(" - Format d'origine: ${if (metadata.isSparse) "Android Sparse Image" else "RAW"}", LogLevel.INFO)
+            log("Métadonnées chargées avec succès:", LogLevel.INFO)
+            log(" - Partition: ${metadata.partitionName}", LogLevel.INFO)
+            log(" - Système de fichiers: ${metadata.filesystemType.uppercase()}", LogLevel.INFO)
+            log(" - Format d'origine: ${if (metadata.isSparse) "Android Sparse Image" else "RAW"}", LogLevel.INFO)
 
-        if (!rootfsDir.exists() || rootfsDir.listFiles().isNullOrEmpty()) {
-            log("ERREUR: Le dossier rootfs/ est manquant ou vide.", LogLevel.ERROR)
-            _isProcessing.value = false
-            return@withContext Result.failure(IllegalStateException("rootfs/ vide"))
-        }
+            if (!rootfsDir.exists() || rootfsDir.listFiles().isNullOrEmpty()) {
+                log("ERREUR: Le dossier rootfs/ est manquant ou vide.", LogLevel.ERROR)
+                _isProcessing.value = false
+                return@withContext Result.failure(IllegalStateException("rootfs/ vide"))
+            }
 
-        val outputDir = getRepackedOutputDir()
-        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-        val outputFileName = "${metadata.partitionName}_repacked_${timeStamp}.img"
-        val outputFile = File(outputDir, outputFileName)
+            val outputDir = getRepackedOutputDir()
+            // Ensure output directory exists with root and has open permissions
+            RootService.executeCommand("mkdir -p '${outputDir.absolutePath}' && chmod 777 '${outputDir.absolutePath}' 2>/dev/null", useRoot = true)
 
-        log("Reconstruction de l'image de partition vers: ${outputFile.absolutePath}", LogLevel.INFO)
+            val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val outputFileName = "${metadata.partitionName}_repacked_${timeStamp}.img"
+            val outputFile = File(outputDir, outputFileName)
 
-        val binDir = BinaryManager.getBinDir(context)
-        val rawRepackFile = File(tempDir, "repack_raw.img")
+            log("Reconstruction de l'image de partition vers: ${outputFile.absolutePath}", LogLevel.INFO)
 
-        // STEP 1: Reconstruct RAW partition filesystem
-        val fsSuccess = if (metadata.filesystemType.equals("erofs", ignoreCase = true)) {
-            val mkfsCmd = "${binDir.absolutePath}/mkfs.erofs '${rawRepackFile.absolutePath}' '${rootfsDir.absolutePath}'"
-            RootService.executeCommand(mkfsCmd, useRoot = true) { log(it, LogLevel.INFO) } == 0
-        } else {
+            val binDir = BinaryManager.getBinDir(context)
+            val rawRepackFile = File(tempDir, "repack_raw.img")
+
+            // STEP 1: Reconstruct RAW partition filesystem
             val fsConfigPath = File(databaseDir, metadata.fsConfigFile).absolutePath
             val contextsPath = File(databaseDir, metadata.selinuxContextsFile).absolutePath
-            val makeExt4Cmd = "${binDir.absolutePath}/make_ext4fs -s -S '$contextsPath' -C '$fsConfigPath' -l ${metadata.originalSizeBytes} -a ${metadata.partitionName} '${rawRepackFile.absolutePath}' '${rootfsDir.absolutePath}'"
-            RootService.executeCommand(makeExt4Cmd, useRoot = true) { log(it, LogLevel.INFO) } == 0
-        }
 
-        // Fallback robust image builder if binary helper returned standard exit
-        if (!rawRepackFile.exists() || rawRepackFile.length() == 0L) {
-            reconstructRawFallback(rootfsDir, metadata, rawRepackFile)
-        }
-
-        // STEP 2: Convert to Android Sparse if original was sparse
-        if (metadata.isSparse) {
-            log("Conversion vers le format Android Sparse via img2simg...", LogLevel.INFO)
-            val img2simgCmd = "${binDir.absolutePath}/img2simg '${rawRepackFile.absolutePath}' '${outputFile.absolutePath}'"
-            val sparseCode = RootService.executeCommand(img2simgCmd, useRoot = true) { log(it, LogLevel.INFO) }
-            if (sparseCode != 0 || !outputFile.exists() || outputFile.length() == 0L) {
-                rawRepackFile.copyTo(outputFile, overwrite = true)
+            if (metadata.filesystemType.equals("erofs", ignoreCase = true)) {
+                log("Exécution de mkfs.erofs pour la partition EROFS...", LogLevel.INFO)
+                val mkfsCmd = "${binDir.absolutePath}/mkfs.erofs '${rawRepackFile.absolutePath}' '${rootfsDir.absolutePath}'"
+                RootService.executeCommand(mkfsCmd, useRoot = true) { log(it, LogLevel.INFO) }
+            } else {
+                log("Exécution de make_ext4fs pour la partition ext4...", LogLevel.INFO)
+                val makeExt4Cmd = "${binDir.absolutePath}/make_ext4fs -s -S '$contextsPath' -C '$fsConfigPath' -l ${metadata.originalSizeBytes} -a ${metadata.partitionName} '${rawRepackFile.absolutePath}' '${rootfsDir.absolutePath}'"
+                RootService.executeCommand(makeExt4Cmd, useRoot = true) { log(it, LogLevel.INFO) }
             }
-        } else {
-            rawRepackFile.copyTo(outputFile, overwrite = true)
-        }
 
-        if (!outputFile.exists() || outputFile.length() == 0L) {
-            log("ERREUR: Échec de génération de l'image reconstruite.", LogLevel.ERROR)
+            // Fallback robust image builder if binary helper returned standard exit
+            if (!rawRepackFile.exists() || rawRepackFile.length() == 0L) {
+                log("Génération du conteneur image de secours...", LogLevel.INFO)
+                reconstructRawFallback(rootfsDir, metadata, rawRepackFile)
+            }
+
+            // STEP 2: Convert to Android Sparse if original was sparse
+            if (metadata.isSparse) {
+                log("Conversion vers le format Android Sparse via img2simg...", LogLevel.INFO)
+                val img2simgCmd = "${binDir.absolutePath}/img2simg '${rawRepackFile.absolutePath}' '${outputFile.absolutePath}'"
+                val sparseCode = RootService.executeCommand(img2simgCmd, useRoot = true) { log(it, LogLevel.INFO) }
+                if (sparseCode != 0 || !outputFile.exists() || outputFile.length() == 0L) {
+                    copyLargeFileSafely(rawRepackFile, outputFile)
+                }
+            } else {
+                copyLargeFileSafely(rawRepackFile, outputFile)
+            }
+
+            if (!outputFile.exists() || outputFile.length() == 0L) {
+                log("ERREUR: Échec de génération de l'image reconstruite.", LogLevel.ERROR)
+                _isProcessing.value = false
+                return@withContext Result.failure(IllegalStateException("Échec de création du fichier image"))
+            }
+
+            log("Calcul de l'empreinte SHA-256...", LogLevel.INFO)
+            val sha256 = calculateSha256Safely(outputFile)
+            log("SHA-256: $sha256", LogLevel.SUCCESS)
+            val finalMb = outputFile.length() / (1024 * 1024)
+            log("Taille finale de l'image: $finalMb Mo", LogLevel.SUCCESS)
+
+            tempDir.deleteRecursively()
+            tempDir.mkdirs()
+
+            log("Image finale exportée sans écrasement: ${outputFile.name}", LogLevel.SUCCESS)
+            log("=== REPACK TERMINÉ AVEC SUCCÈS ===", LogLevel.SUCCESS)
+
             _isProcessing.value = false
-            return@withContext Result.failure(IllegalStateException("Échec de création du fichier image"))
+            Result.success(outputFile)
+        } catch (t: Throwable) {
+            log("ERREUR CRITIQUE PENDANT LE REPACK: ${t.message ?: t.javaClass.simpleName}", LogLevel.ERROR)
+            _isProcessing.value = false
+            Result.failure(t)
         }
-
-        log("Calcul de l'empreinte SHA-256...", LogLevel.INFO)
-        val sha256 = calculateSha256(outputFile)
-        log("SHA-256: $sha256", LogLevel.SUCCESS)
-        log("Taille finale de l'image: ${outputFile.length() / (1024 * 1024)} Mo", LogLevel.SUCCESS)
-
-        tempDir.deleteRecursively()
-        tempDir.mkdirs()
-
-        log("Image finale exportée sans écrasement: ${outputFile.name}", LogLevel.SUCCESS)
-        log("=== REPACK TERMINÉ AVEC SUCCÈS ===", LogLevel.SUCCESS)
-
-        _isProcessing.value = false
-        Result.success(outputFile)
     }
 
     private fun generateRealFsConfig(rootfsDir: File, outputFile: File, partitionName: String) {
@@ -711,18 +725,60 @@ object ForgeEngine {
         return size
     }
 
-    private fun calculateSha256(file: File): String {
-        return try {
+    private suspend fun copyLargeFileSafely(src: File, dst: File): Boolean = withContext(Dispatchers.IO) {
+        dst.parentFile?.mkdirs()
+        // 1. Root shell copy (Kernel level, instant, zero JVM heap usage, bypasses Scoped Storage)
+        val rootCopyCmd = "mkdir -p '${dst.parentFile?.absolutePath}' && cp '${src.absolutePath}' '${dst.absolutePath}' && chmod 664 '${dst.absolutePath}' 2>/dev/null"
+        val code = RootService.executeCommand(rootCopyCmd, useRoot = true)
+        if (code == 0 && dst.exists() && dst.length() > 0L) {
+            return@withContext true
+        }
+
+        // 2. Non-root shell copy fallback
+        val shCmd = "cp '${src.absolutePath}' '${dst.absolutePath}' 2>/dev/null"
+        if (RootService.executeCommand(shCmd, useRoot = false) == 0 && dst.exists() && dst.length() > 0L) {
+            return@withContext true
+        }
+
+        // 3. JVM Stream copy with 1MB buffer (avoids OutOfMemoryError)
+        return@withContext try {
+            src.inputStream().buffered(1024 * 1024).use { input ->
+                dst.outputStream().buffered(1024 * 1024).use { output ->
+                    input.copyTo(output, bufferSize = 1024 * 1024)
+                }
+            }
+            dst.exists() && dst.length() > 0L
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private suspend fun calculateSha256Safely(file: File): String = withContext(Dispatchers.IO) {
+        if (!file.exists() || file.length() == 0L) return@withContext "N/A"
+
+        // 1. Native shell toybox / sha256sum (runs in C, finishes in seconds on 3GB files)
+        val hashBuffer = StringBuilder()
+        val cmd = "toybox sha256sum '${file.absolutePath}' 2>/dev/null || sha256sum '${file.absolutePath}' 2>/dev/null"
+        val code = RootService.executeCommand(cmd, useRoot = true) { line ->
+            hashBuffer.append(line.trim()).append(" ")
+        }
+        val token = hashBuffer.toString().trim().split(Regex("\\s+")).firstOrNull()
+        if (code == 0 && !token.isNullOrBlank() && token.length == 64) {
+            return@withContext token
+        }
+
+        // 2. Fallback: JVM stream with 1MB buffer
+        return@withContext try {
             val digest = MessageDigest.getInstance("SHA-256")
-            FileInputStream(file).use { fis ->
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                while (fis.read(buffer).also { bytesRead = it } != -1) {
-                    digest.update(buffer, 0, bytesRead)
+            file.inputStream().buffered(1024 * 1024).use { fis ->
+                val buf = ByteArray(1024 * 1024)
+                var readBytes: Int
+                while (fis.read(buf).also { readBytes = it } != -1) {
+                    digest.update(buf, 0, readBytes)
                 }
             }
             digest.digest().joinToString("") { "%02x".format(it) }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             "N/A"
         }
     }

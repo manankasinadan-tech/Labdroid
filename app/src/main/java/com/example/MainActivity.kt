@@ -56,12 +56,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            var themeMode by remember { mutableStateOf(AppThemeMode.SYSTEM) }
+            val initialTheme = remember { com.example.data.service.ThemePreferences.getThemeMode(this) }
+            var themeMode by remember { mutableStateOf(initialTheme) }
 
             LabdroidTheme(themeMode = themeMode) {
                 LabdroidApp(
                     currentThemeMode = themeMode,
-                    onThemeModeChange = { themeMode = it }
+                    onThemeModeChange = { newMode ->
+                        themeMode = newMode
+                        com.example.data.service.ThemePreferences.setThemeMode(this@MainActivity, newMode)
+                    }
                 )
             }
         }
